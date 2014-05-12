@@ -1,4 +1,18 @@
+
+/**
+*
+*
+#/usr/bin/env nodeJS
+## -*- coding: utf-8 -*-
+##
+## Copyright (c) 2014 Dominick Makome
+**
+**/
+
 var express = require('express');
+//Appel du module google
+var google =  require('google');
+
 var http = require('http');
 var path = require('path');
 var favicon = require('static-favicon');
@@ -28,8 +42,6 @@ var connection = mysql.createConnection({
   password : 'unoporuno',
   database : 'unoporuno'
 });
-
-
 
 //Le port dans lequel on va écouter
 app.set('port', process.env.PORT || 3000);
@@ -75,10 +87,13 @@ app.get('/register', routes.register);
 
 app.get('/search', routes.search);
 
+app.get('/google', routes.google);
+
 app.get('/search/:id', routes.persons);
 
-app.get('/details', routes.details);
+app.get('/details/:id', routes.details);
 
+app.get('/logout',routes.logout);
 /** Les différentes fonctions **/
 
 //Cette fonction retourne un tableau d'erreurs bien formaté
@@ -256,6 +271,186 @@ app.post('/login', function(req,res){
         }
     });
 
+
+});
+
+
+//Si une recherche a été déclenchée
+app.post('/search',function(req, res){
+
+    //On crée une variable recherche
+    var search = req.body.search;
+    //Variable qui va gérer les érreurs
+    var error = "";
+
+    //Nos différents champs de recherches
+    var name = search.name;
+    var description = search.description;
+    var geo = search.geo;
+    var status = "En cours de traitement";
+
+    //Nom de l'utilisateur qui effectue sa recherche
+    var username = req.session.username;
+
+    console.log(search);
+
+
+    //Si tout les champs sont vides alors une érreur sera déclenchée
+    if(name == '' || description == '' || geo == '')
+    {
+        console.log("La description et le nom sont des champs obligatoires.");
+        //On crée notre érreur
+        err = "Tout les champs ci dessous sont obligatoires.";
+
+        //Quelques données
+        var data = {title: 'Faites votre recherche ici.', 
+                    description: 'Rechercher un expert.', 
+                    layoutFile: 'layout',
+                    username: req.session.username,
+                    id: req.session.id,
+                    err:err,
+            };
+
+        res.render('search',data);
+    }
+    else
+    {
+        //Cela veut dire que les champs obligatoires sont remplis
+        var insert = "INSERT INTO unoporuno_busqueda (nombre,fecha,usuario,descripcion,status) VALUES(?,?,?,?,?)";
+        var now  = new Date();
+
+        //On insert nos données dans la bonne table d'utilisation
+        connection.query(insert,[name,now,username,description,status],function(err){
+
+            if(err) throw err;
+            else
+            {
+                //On récupère le busqueda_id pour faire une bonne insertion
+                recup = "SELECT id from unoporuno_busqueda WHERE nombre = ? && usuario = ? && descripcion = ? ORDER BY id DESC LIMIT 1";
+
+                //On applique la requête de récupération
+                connection.query(recup,[name,username,description],function(err,rows){
+
+                    if(err) throw err;
+                    else
+                    {
+                        //On enregistre l'id du busqueda(de la recherche)
+                        var busqueda_id = rows[0].id;
+                        //On fait une seconde insertion dans la table unoporuno_persona
+                        insert = "INSERT INTO unoporuno_persona (busqueda_id,name,geo,orgs,topics) VALUES(?,?,?,?,?)";
+                        //On applique l'enregistrement  des données une fois de plus
+                        connection.query(insert,[busqueda_id,name,geo,description,description],function(err){
+
+                            if(err) throw err;
+                            else
+                            {
+                                //On fait une insertion dans la table unoporuno_requete
+
+                                //On récupère persona_id
+                                recup = "SELECT id from unoporuno_persona WHERE busqueda_id = ? && name = ? && geo = ? && orgs = ?  && topics = ? ORDER BY id LIMIT 1";
+
+                                //On applique la requête
+                                connection.query(recup,[busqueda_id,name,geo,description,description],function(err,rows){
+
+                                    if(err) throw err;
+                                    else
+                                    {
+                                        //On enregistre persona_id
+                                        persona_id = rows[0].id;
+                                        //On fait une redirection vers la page google qui va faire les requêtes préparées chez google
+                                        req.session.persona_id = parseInt(persona_id);
+                                        req.session.busqueda_id  = parseInt(busqueda_id);
+                                        //On redirige vers la page google
+                                        res.redirect('/google');
+                                    }
+
+                                });
+                            }
+
+                        });
+
+                    }
+                });
+
+            }
+
+        });
+    }
+
+});
+
+//Si on affine la recherche sur la langue
+app.post('/details/:id',function(req,res){
+
+    //On récupère tout les paramètres qui sont passé
+    var params = req.body;
+
+    //On récupère les langues et l'id de la personne
+    var lang = params.lang;
+    var persona_id = parseInt(params.persona_id);
+    //On va récupérer tout les snippets des langues spécifiées
+    var i = 0;
+    //Notre requête de récupération des filtres
+    var recup = "SELECT DISTINCT * from (unoporuno_snippet JOIN unoporuno_features) WHERE (unoporuno_features.value = ? && unoporuno_snippet.persona_id = ? && unoporuno_snippet.id = unoporuno_features.snippet_id)";
+    var _data  = {};
+    //On récupère la première langue ou la première lettre
+    var langue  = lang[0];
+
+    //Si la personne a choisi plusieurs langues
+    if(langue.length > 1)
+    {
+        //On parcourt les langues puis on applique une requête
+        for(i = 0; i < lang.length; i++)
+        {
+            //On récupère la langue courante
+            langue = lang[i];
+            //On applique la requête de récupération
+            connection.query(recup,[langue,persona_id],function(err,rows){
+
+                if(err) throw err;
+                else
+                {
+                    //On met les données dans une variable
+                    _data[i] = rows;
+                }
+            });
+        }
+    }
+    //Si elle a choisit qu'une seule langue
+    else
+    {
+        //On applique la requête sur la langue si ce n'est qu'une langue
+        connection.query(recup,[lang,persona_id],function(err,rows){
+            if(err) throw err;
+            else
+            {
+                console.log(rows);
+                //Récupération de toutes les langues
+                recup2 = "SELECT DISTINCT value from unoporuno_features";
+                //Connection pour récupérer les valeurs
+                connection.query(recup2,function(error,rows2){
+
+                    if(error) return getError(error);
+                    else
+                    {
+                        //Différentes données à passer en url à la page
+                        var data = {title: 'Détails de la recherche n° '+persona_id, 
+                                    description: 'Différents résultats sur la recherche n° '+persona_id,
+                                    persona_id:persona_id, 
+                                    layoutFile: 'layout',
+                                    username: req.session.username,
+                                    id: req.session.id,
+                                    selected:lang,
+                                    data: rows,
+                                    lang: rows2};
+                        //On envoie la réponse à une page html
+                        res.render('details',data);
+                    }
+
+                });
+            }
+        });
+    }
 
 });
 
