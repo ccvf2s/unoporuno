@@ -35,6 +35,8 @@ var mysql = require('mysql');
 //Pour crypter les mots de passes
 var crypto = require('crypto');
 
+// Le serveur socket
+var net = require('net');
 //Base de données et les différentes connections
 var connection = mysql.createConnection({
   host     : 'localhost',
@@ -45,6 +47,8 @@ var connection = mysql.createConnection({
 
 //Le port dans lequel on va écouter
 app.set('port', process.env.PORT || 3000);
+//On envoie le host
+app.set('host','127.0.0.1');
 
 //test
 app.engine('ejs',engine);
@@ -111,6 +115,88 @@ function getErrors(err)
     }
 
     return errors;
+}
+
+
+
+/**
+*
+* Cette fonction crée des requêtes aléatoirement, ensuite fait appel à la fonction
+* Google pour effectuer avec un délai de 60 secondes entre chaque requêtes.
+*
+*/
+function query_bdd(req,res) 
+{
+
+    //On récupère nos deux paramètres cruciaux
+    var busqueda_id = req.session.busqueda_id;
+    var persona_id = req.session.persona_id;
+
+    //Applique la requête
+    //On récupère la liste des requêtes
+    var recup = "SELECT * from unoporuno_requete WHERE persona_id = ? && busqueda_id = ?"; 
+    //REQUETE d extraction des infos de la table unoporuno_requete
+    connection.query(recup,[persona_id,busqueda_id],function(err, rows) {
+            //Si erreur
+            if (err) throw err;
+            else
+            {
+            
+              for(var i = 0; i < rows.length; i++)
+              {
+
+                console.log(rows[i].id+" : "+rows[i].content+" "+rows[i].type_r);
+                //attente de 60 seconde entre chaque requete google @Anthony faisait ou presque
+                setTimeout(google_req(rows[i].content,req,res),60000);
+
+              }
+              
+            }
+        
+    });
+
+}
+
+
+/**
+  * Requete google qui prend en parametre un attribut de la base de données unoporuno_requete avec une recherche efféctuée 
+  */
+function google_req(content,req,res)
+{
+        //Maximum de 10 résultats par requete.
+        google.resultsPerPage = 10;
+
+        google(content,function(err,next,links){
+
+            //On est bel et bien dans le script google
+            console.log("In google script");
+
+            //affiche le rapport d'erreur dans la console
+            if (err) console.error(err);
+            //Si vaut null, alors aucun résultat par google
+            if(next == null)
+            {
+              res.write("Aucun résultat n'a été trouvé!");
+              res.end();
+            }     
+
+            //pour chaque resultat on affiche le titre de la page et sa description comme sur google
+            for(var i = 0; i<links.length;i++)
+            {
+                persona_id = req.session.persona_id;
+                title =  links[i].title;
+                description =  links[i].description;
+                link = links[i].link;
+
+                console.log("Insertion n° "+i);
+                //Insertion des données dans la base de données unoporuno_snippet
+                insert = "INSERT INTO unoporuno_snippet (persona_id,query,title,description,link) VALUES(?,?,?,?,?)";
+
+                connection.query(insert,[persona_id,content,title,description,link]);
+            }
+        
+      });
+
 }
 
 /** On effectue ici les différentes actions en post **/
@@ -360,8 +446,68 @@ app.post('/search',function(req, res){
                                         //On fait une redirection vers la page google qui va faire les requêtes préparées chez google
                                         req.session.persona_id = parseInt(persona_id);
                                         req.session.busqueda_id  = parseInt(busqueda_id);
+
+                                        console.log("Avant Fouille.");
+
+                                        /* Faire appel à la fouille de données */
+                                        //Création du serveur
+                                        net.createServer(function(socket){
+
+                                                socket.on('error',function(err){
+                                                    console.log("Erreur : ");
+                                                    console.log(err.stack);
+
+                                                    res.redirect('/');
+                                                });
+
+
+                                                //On ouvre la socket et on lit les données
+                                                socket.on('data', function(data){
+                                                        //Données envoyées par Python
+                                                        console.log('DATA BY PYTHON' + socket.remoteAddress + ': ' + data);
+
+                                                        //1er Envoie
+                                                        if(data == "Begin")
+                                                        {
+                                                            //On envoie
+                                                            send = "un";
+                                                            //On envoie le premier send
+                                                            socket.write(send);
+                                                            //On constitue les données qui seront envoyés 
+                                                            send = req.session.busqueda_id+'#'+req.session.persona_id+'#'+name+'#'+description+'#'+geo;
+                                                            //On envoie les données
+                                                            socket.write(send);
+                                                        }
+                                                        else if(data == "true")
+                                                        {
+                                                            query_bdd(req,res);
+                                                            //On envoie
+                                                            send = "deux";
+                                                            //On envoie le send
+                                                            socket.write(send);
+                                                        }
+                                                        else if(data == "second")
+                                                        {
+                                                            //Ferméture de la socket
+                                                            socket.on('close',function(data){
+                                                                console.log('Socket Fermée.');
+                                                            });
+
+                                                            //On redirige vers l'accueil
+                                                            res.redirect('/');
+                                                        }
+                                                        else
+                                                        {
+                                                            console.log('Nothing!!!!!');
+                                                        }
+
+                                                });
+
+                                        }).listen(3200,app.get('host'));
+                                        /* Fouille fini */
+
                                         //On redirige vers la page google
-                                        res.redirect('/google');
+                                        //res.redirect('/google');
                                     }
 
                                 });
@@ -419,37 +565,52 @@ app.post('/details/:id',function(req,res){
     //Si elle a choisit qu'une seule langue
     else
     {
-        //On applique la requête sur la langue si ce n'est qu'une langue
-        connection.query(recup,[lang,persona_id],function(err,rows){
-            if(err) throw err;
-            else
-            {
-                console.log(rows);
-                //Récupération de toutes les langues
-                recup2 = "SELECT DISTINCT value from unoporuno_features";
-                //Connection pour récupérer les valeurs
-                connection.query(recup2,function(error,rows2){
+        //On récupère le nom de la personne
+        var recup_name = "SELECT * from unoporuno_persona where id = ?";
+        var nameOf = "";
+        //On applique la requête pour récupérer le nom
+        connection.query(recup_name,[persona_id],function(err,rows){
 
-                    if(error) return getError(error);
-                    else
-                    {
-                        //Différentes données à passer en url à la page
-                        var data = {title: 'Détails de la recherche n° '+persona_id, 
-                                    description: 'Différents résultats sur la recherche n° '+persona_id,
-                                    persona_id:persona_id, 
-                                    layoutFile: 'layout',
-                                    username: req.session.username,
-                                    id: req.session.id,
-                                    selected:lang,
-                                    data: rows,
-                                    lang: rows2};
-                        //On envoie la réponse à une page html
-                        res.render('details',data);
-                    }
+              if(err) throw err;
+              else
+              {
+                    //Nom de l'utilisateur
+                    nameOf = rows[0].name;
+                    //On applique la requête sur la langue si ce n'est qu'une langue
+                    connection.query(recup,[lang,persona_id],function(err,rows){
+                        if(err) throw err;
+                        else
+                        {
+                            console.log(rows);
+                            //Récupération de toutes les langues
+                            recup2 = "SELECT DISTINCT value from unoporuno_features";
+                            //Connection pour récupérer les valeurs
+                            connection.query(recup2,function(error,rows2){
 
-                });
-            }
+                                if(error) return getError(error);
+                                else
+                                {
+                                    //Différentes données à passer en url à la page
+                                    var data = {title: 'Résultat(s) sur la recherche: "'+nameOf+'"', 
+                                                description: 'Différents résultats sur la recherche "'+nameOf+'"',
+                                                persona_id:persona_id, 
+                                                layoutFile: 'layout',
+                                                username: req.session.username,
+                                                id: req.session.id,
+                                                selected:lang,
+                                                data: rows,
+                                                lang: rows2};
+                                    //On envoie la réponse à une page html
+                                    res.render('details',data);
+                                }
+
+                            });
+                        }
+                    });
+
+              }
         });
+        
     }
 
 });
